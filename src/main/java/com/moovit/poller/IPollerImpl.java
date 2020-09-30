@@ -14,6 +14,13 @@ public class IPollerImpl implements IPoller {
     private BlockingQueue<StopEtaLine> stopEtaQueue = new ArrayBlockingQueue<>(1000);
     private ArrayBlockingQueue<String> linesQueue;
 
+    private CountDownLatch latch;
+
+
+
+    private void initCountDownLatch(int size){
+        latch=new CountDownLatch(size);
+    }
     @Override
     public void init(PollerConfig pollerConfig) {
 
@@ -22,11 +29,13 @@ public class IPollerImpl implements IPoller {
         linesQueue.addAll(pollerConfig.getLineNumbers());
         String lastLine = pollerConfig.getLineNumbers().get(pollerConfig.getLineNumbers().size() - 1);
 
+        initCountDownLatch(pollerConfig.getLineNumbers().size());
+
+
         executor = Executors.newScheduledThreadPool(1);
         executor.scheduleAtFixedRate((Runnable) () -> {
             // in case
             if (readIdToTreeMap.isEmpty()) {
-
                 readIdToTreeMap = writeIdToReadMap;
             }
             boolean finish = false;
@@ -34,7 +43,7 @@ public class IPollerImpl implements IPoller {
                 for (int i = 0; i < pollerConfig.getMaxConcurrency(); i++) {
                     try {
                         String lineNumber = linesQueue.take();
-                        new PollerTask(lineNumber, pollerConfig.getProvider(), stopEtaQueue).start();
+                        new PollerTask(lineNumber, pollerConfig.getProvider(), stopEtaQueue,latch).start();
                         if (lineNumber.equals(lastLine)) {
                             finish = true;
                             continue;
@@ -46,7 +55,14 @@ public class IPollerImpl implements IPoller {
                 }
             }
 
-            // assume PollerTask thread have completed their action!
+            // wait for all task to finish
+            try {
+                latch.await();
+                initCountDownLatch(pollerConfig.getLineNumbers().size());
+                // prepare for next round;
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
             lock.writeLock().lock();
 
             // point readIdToTreeMap to latest writeIdToReadMap
